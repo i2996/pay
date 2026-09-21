@@ -546,7 +546,7 @@ function renderHome(){
   if(!S.start) return setupCard();
   var cfg = getCfg(y);
   var banner = cfg.provisional
-    ? '<p class="banner">' + y + '년 기준값(최저시급, 보험 요율, 공휴일)이 아직 임시예요. 설정의 연도별 기준에서 확인해 주세요.</p>' : '';
+    ? '<p class="banner">' + y + '년 기준값(시급, 보험 요율, 공휴일)이 아직 임시예요. 설정의 연도별 기준에서 확인해 주세요.</p>' : '';
   if(t < S.start){
     return banner + '<section class="card"><h2>근무 시작 전이에요</h2><p class="muted">시작일은 ' + md(S.start) +
       '(' + wd(S.start) + ')이에요. 그날부터 자동으로 계산해요.</p></section>';
@@ -555,8 +555,14 @@ function renderHome(){
   var from = S.start > iso(y, m, 1) ? S.start : iso(y, m, 1);
   var np = nextPay(t), npFull = payOf(np.y, np.m, null);
   var dday = diffDays(t, np.date);
-  var bal = balance(t);
-  var upcoming = leaveDates().filter(function(k){ return k > t; }).length;
+  var bal = Math.max(0, balance(t));                   // 지금 보유한 월차
+  var upcoming = leaveDates().filter(function(k){ return k > t; }).length;   // 앞으로 쓰려고 잡아 둔 월차
+  var remain = Math.max(0, bal - upcoming);
+  var resv = '';
+  if(upcoming){
+    resv = '<p class="st">지금 보유 ' + bal + '일에서 예약한 월차 ' + upcoming + '일을 뺀 값이에요.</p>';
+    if(bal - upcoming < 0) resv += '<p class="st">예약 중 ' + (upcoming - bal) + '일은 앞으로 생길 월차로 쓰는 거예요.</p>';
+  }
   var mi = monthInfo(y, m), lv;
   if(!mi.first) lv = '이번 달은 근무일이 없어요.';
   else if(S.start > mi.first) lv = '이번 달은 중간에 시작해서 만근 계산에서 빠져요.';
@@ -584,8 +590,8 @@ function renderHome(){
     '<p class="amt">' + won(npFull.net) + '</p>' +
     (dowOf(np.date) === 0 || dowOf(np.date) === 6 || holName(np.date) ? '<p class="muted" style="font-size:.82rem;margin-top:4px">급여일이 쉬는 날이라 실제로는 앞당겨질 수 있어요.</p>' : '') +
     '</section>';
-  o += '<section class="card leave-card"><h2>잔여 월차</h2><p class="num">' + bal + '<small>일</small></p>' +
-    '<p class="st">' + lv + '</p>' + (upcoming ? '<p class="st">앞으로 쓸 예정인 월차 ' + upcoming + '일이 이미 빠져 있어요.</p>' : '') + '</section>';
+  o += '<section class="card leave-card"><h2>잔여 월차</h2><p class="num">' + remain + '<small>일</small></p>' +
+    resv + '<p class="st">' + lv + '</p></section>';
   var recs = Object.keys(st.records).filter(function(k){ return k >= S.start; }).sort().reverse().slice(0, 6);
   o += '<section class="card"><h2>최근 기록</h2>';
   if(!recs.length) o += '<p class="muted">아직 기록이 없어요. 기본 근무와 다른 날만 기록하면 돼요.</p>';
@@ -707,7 +713,8 @@ function renderSettings(){
     ys.map(function(k){ return '<button type="button" class="y" data-act="cfgYear" data-y="' + k + '" aria-pressed="' + (k === cfgYear) + '">' + k + '년</button>'; }).join('') +
     '<button type="button" class="y" data-act="addYear">+ 다음 해</button></div>';
   if(c.provisional) o += '<p class="banner" style="margin-top:4px">' + cfgYear + '년 값은 임시예요. 공식 값을 확인해서 고친 뒤 아래 확인 완료를 눌러 주세요.</p>';
-  o += '<div class="two"><div class="field"><label for="y_mw">최저시급(원)</label><input type="number" id="y_mw" data-y="minWage" min="0" step="10" value="' + c.minWage + '" inputmode="numeric"></div>' +
+  o += '<small class="muted">시급은 실제로 받는 금액을 넣으세요. 주휴수당이 이미 들어 있는 시급이면 위의 \'주휴수당 포함\'을 꺼야 두 번 계산되지 않아요.</small>';
+  o += '<div class="two"><div class="field"><label for="y_mw">시급(원)</label><input type="number" id="y_mw" data-y="minWage" min="0" step="10" value="' + c.minWage + '" inputmode="numeric"></div>' +
     '<div class="field"><label for="y_pe">국민연금 근로자(%)</label><input type="number" id="y_pe" data-y="pension" min="0" step="0.005" value="' + c.pension + '" inputmode="decimal"></div></div>' +
     '<div class="two"><div class="field"><label for="y_he">건강보험 근로자(%)</label><input type="number" id="y_he" data-y="health" min="0" step="0.0005" value="' + c.health + '" inputmode="decimal"></div>' +
     '<div class="field"><label for="y_ca">장기요양(건강보험료의 %)</label><input type="number" id="y_ca" data-y="care" min="0" step="0.01" value="' + c.care + '" inputmode="decimal"></div></div>' +
