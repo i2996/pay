@@ -200,6 +200,7 @@ details.mrow .body{padding:0 16px 16px;}
 .pick{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px;}
 .pick button{min-height:42px;padding:0 14px;border-radius:999px;border:1.5px solid var(--line);background:transparent;font-weight:700;}
 .pick button[aria-pressed="true"]{background:var(--extra-t);color:var(--extra);border-color:var(--extra);}
+.pick.lv button[aria-pressed="true"]{background:var(--leave-t);color:var(--leave);border-color:var(--leave);}
 .pv{background:var(--bg);border-radius:12px;padding:10px 12px;font-size:.92rem;margin:8px 0;}
 .warn{color:var(--absent);font-weight:700;font-size:.92rem;min-height:1.4em;}
 .srow{display:flex;gap:8px;margin-top:12px;}
@@ -261,7 +262,12 @@ function cleanRecords(o){
     var kind = (r.k === 'leave' || r.k === 'absent') ? r.k : '';
     var x = (typeof r.x === 'number' && r.x > 0 && r.x <= 24) ? r.x : 0;
     var m = (typeof r.m === 'number' && r.m > 0 && r.m <= 4) ? r.m : 1;
-    if(kind || x > 0) out[k] = {k:kind, x:kind ? 0 : x, m:m};
+    if(!kind && !(x > 0)) return;
+    var rec = {k:kind, x:kind ? 0 : x, m:m};
+    if(kind === 'leave' && typeof r.lm === 'number' && r.lm >= 1 && r.lm < 24 * 60 && (r.p === 'half' || r.p === 'hour' || r.p === 'min')){
+      rec.lm = Math.round(r.lm); rec.p = r.p;
+    }
+    out[k] = rec;
   });
   return out;
 }
@@ -412,7 +418,7 @@ function deductions(gross, y){
 function monthCalc(y, m, limit){
   var S = st.settings, H = S.hours, wage = getCfg(y).minWage, dim = daysIn(y, m);
   var last = iso(y, m, dim), lim = (limit && limit < last) ? limit : last;
-  var r = {y:y, m:m, workDays:0, leaveDays:0, absentDays:0, holidayDays:0, extraH:0, extraPay:0,
+  var r = {y:y, m:m, workDays:0, leaveDays:0, partCnt:0, leaveMin:0, absentDays:0, holidayDays:0, extraH:0, extraPay:0,
     basePay:0, weeklyPay:0, weeklyCnt:0, holidayPay:0, sched:0, lim:lim};
   if(!S.start) { r.gross = 0; r.ded = deductions(0, y); r.net = 0; return r; }
   for(var d = 1; d <= dim; d++){
@@ -424,7 +430,10 @@ function monthCalc(y, m, limit){
       if(rec && rec.k === 'absent'){ r.absentDays++; }
       else{
         r.basePay += H * wage;
-        if(rec && rec.k === 'leave') r.leaveDays++; else r.workDays++;
+        if(rec && rec.k === 'leave'){
+          r.leaveMin += leaveMin(rec);
+          if(rec.lm){ r.partCnt++; r.workDays++; } else r.leaveDays++;
+        }else r.workDays++;
       }
     }else if(S.holidayPay && holName(s) && dowOf(s) >= 1 && dowOf(s) <= 5){
       r.holidayPay += H * wage; r.holidayDays++;
@@ -473,18 +482,52 @@ function earnedLeave(asOf){
   });
   return n;
 }
+/* 월차 1일 = 하루 근무시간. 반차·시차·분차는 분 단위로 빼요. */
+function dayMin(){ return Math.round(st.settings.hours * 60); }
+function leaveMin(r){
+  if(!r || r.k !== 'leave') return 0;
+  return r.lm ? Math.min(r.lm, dayMin()) : dayMin();
+}
 function leaveDates(){
   var S = st.settings;
   return Object.keys(st.records).filter(function(k){ return st.records[k].k === 'leave' && S.start && k >= S.start; }).sort();
 }
-function usedLeave(asOf){ return leaveDates().filter(function(k){ return k <= asOf; }).length; }
-function balance(asOf){ return st.settings.opening + earnedLeave(asOf) - usedLeave(asOf); }
+function usedLeaveMin(asOf){
+  return leaveDates().reduce(function(a, k){ return k <= asOf ? a + leaveMin(st.records[k]) : a; }, 0);
+}
+function balanceMin(asOf){ return (st.settings.opening + earnedLeave(asOf)) * dayMin() - usedLeaveMin(asOf); }
+function balance(asOf){ return balanceMin(asOf) / dayMin(); }
 function leaveViolation(){
-  var ds = leaveDates();
+  var ds = leaveDates(), used = 0;
   for(var i = 0; i < ds.length; i++){
-    if(st.settings.opening + earnedLeave(ds[i]) - (i + 1) < 0) return ds[i];
+    used += leaveMin(st.records[ds[i]]);
+    if((st.settings.opening + earnedLeave(ds[i])) * dayMin() - used < 0) return ds[i];
   }
   return null;
+}
+function hmText(min){
+  var h = Math.floor(min / 60), mm = min % 60;
+  return (h ? h + '시간' : '') + (h && mm ? ' ' : '') + (mm ? mm + '분' : '') || '0분';
+}
+/* 분을 "2일 3시간 30분"처럼 바꿔요 */
+function leaveText(min){
+  var D = dayMin(), d = Math.floor(min / D), rest = min - d * D;
+  if(!rest) return d + '일';
+  return (d ? d + '일 ' : '') + hmText(rest);
+}
+function leaveNumHtml(min){
+  var D = dayMin(), d = Math.floor(min / D), rest = min - d * D, h = Math.floor(rest / 60), mm = rest % 60;
+  return d + '<small>일</small>' + (h ? ' ' + h + '<small>시간</small>' : '') + (mm ? ' ' + mm + '<small>분</small>' : '');
+}
+function leaveLabel(r){
+  if(!r.lm) return '월차';
+  if(r.p === 'half') return '반차';
+  return (r.p === 'hour' ? '시차 ' : '분차 ') + hmText(r.lm);
+}
+function leaveShort(r){
+  if(!r.lm) return '월차';
+  if(r.p === 'half') return '반차';
+  return r.p === 'hour' ? '시차' : '분차';
 }
 
 /* ---------- 홈에서 쓰는 요약 ---------- */
@@ -517,7 +560,10 @@ function stubLines(r, withNet){
     L += '<div class="ln ' + cls + '"><dt>' + dt + (small ? '<small>' + small + '</small>' : '') + '</dt><dd>' + dd + '</dd></div>';
   }
   var days = r.workDays + r.leaveDays;
-  ln('', '기본급', days + '일 × ' + H + '시간' + (r.leaveDays ? ', 월차 ' + r.leaveDays + '일 포함' : ''), won(r.basePay));
+  var inc = [];
+  if(r.leaveDays) inc.push('월차 ' + r.leaveDays + '일');
+  if(r.partCnt) inc.push('반차·시차·분차 ' + r.partCnt + '회');
+  ln('', '기본급', days + '일 × ' + H + '시간' + (inc.length ? ', ' + inc.join(', ') + ' 포함' : ''), won(r.basePay));
   if(S.weeklyPay) ln('', '주휴수당', r.weeklyCnt + '주 개근', won(r.weeklyPay));
   if(S.holidayPay && r.holidayDays) ln('', '공휴일 유급', r.holidayDays + '일', won(r.holidayPay));
   if(r.extraH > 0) ln('', '추가근무', r.extraH + '시간', won(r.extraPay));
@@ -557,13 +603,13 @@ function renderHome(){
   var from = S.start > iso(y, m, 1) ? S.start : iso(y, m, 1);
   var np = nextPay(t), npFull = payOf(np.y, np.m, null);
   var dday = diffDays(t, np.date);
-  var bal = Math.max(0, balance(t));                   // 지금 보유한 월차
-  var upcoming = leaveDates().filter(function(k){ return k > t; }).length;   // 앞으로 쓰려고 잡아 둔 월차
+  var bal = Math.max(0, balanceMin(t));                // 지금 보유한 월차(분)
+  var upcoming = usedLeaveMin('9999-12-31') - usedLeaveMin(t);   // 앞으로 쓰려고 잡아 둔 월차(분)
   var remain = Math.max(0, bal - upcoming);
   var resv = '';
   if(upcoming){
-    resv = '<p class="st">지금 보유 ' + bal + '일에서 예약한 월차 ' + upcoming + '일을 뺀 값이에요.</p>';
-    if(bal - upcoming < 0) resv += '<p class="st">예약 중 ' + (upcoming - bal) + '일은 앞으로 생길 월차로 쓰는 거예요.</p>';
+    resv = '<p class="st">지금 보유 ' + leaveText(bal) + '에서 예약한 ' + leaveText(upcoming) + '을 뺀 값이에요.</p>';
+    if(bal - upcoming < 0) resv += '<p class="st">예약 중 ' + leaveText(upcoming - bal) + '은 앞으로 생길 월차로 쓰는 거예요.</p>';
   }
   var mi = monthInfo(y, m), lv;
   if(!mi.first) lv = '이번 달은 근무일이 없어요.';
@@ -584,7 +630,7 @@ function renderHome(){
     '<span>근무 시작 후 누적 실수령 <b>' + won(cumulativeNet(t)) + '</b></span></div></section>';
   o += '<section class="actions">' +
     '<button type="button" class="btn extra" data-act="quick" data-k="extra">+ 추가근무</button>' +
-    '<button type="button" class="btn leave" data-act="quick" data-k="leave">월차 쓰기</button></section>';
+    '<button type="button" class="btn leave" data-act="quick" data-k="leave">월차·반차 쓰기</button></section>';
   o += '</div><div class="col-b">';
   o += '<section class="card pay-next"><h2>다음 급여일</h2>' +
     '<p class="when">' + md(np.date) + ' (' + wd(np.date) + ')<span class="dd">' + (dday === 0 ? '오늘' : 'D-' + dday) + '</span></p>' +
@@ -592,7 +638,8 @@ function renderHome(){
     '<p class="amt">' + won(npFull.net) + '</p>' +
     (dowOf(np.date) === 0 || dowOf(np.date) === 6 || holName(np.date) ? '<p class="muted" style="font-size:.82rem;margin-top:4px">급여일이 쉬는 날이라 실제로는 앞당겨질 수 있어요.</p>' : '') +
     '</section>';
-  o += '<section class="card leave-card"><h2>잔여 월차</h2><p class="num">' + remain + '<small>일</small></p>' +
+  o += '<section class="card leave-card"><h2>잔여 월차</h2><p class="num">' + leaveNumHtml(remain) + '</p>' +
+    '<p class="st">월차 1일 = ' + hmText(dayMin()) + ', 반차는 ' + hmText(dayMin() / 2) + '으로 계산해요.</p>' +
     resv + '<p class="st">' + lv + '</p></section>';
   var recs = Object.keys(st.records).filter(function(k){ return k >= S.start; }).sort().reverse().slice(0, 6);
   o += '<section class="card"><h2>최근 기록</h2>';
@@ -601,7 +648,7 @@ function renderHome(){
     o += '<div class="recs">';
     recs.forEach(function(k){
       var r = st.records[k], tag;
-      if(r.k === 'leave') tag = '<span class="chip leave">월차</span>';
+      if(r.k === 'leave') tag = '<span class="chip leave">' + esc(leaveLabel(r)) + '</span>';
       else if(r.k === 'absent') tag = '<span class="chip absent">결근</span>';
       else tag = '<span class="chip extra">추가근무 ' + r.x + '시간' + (r.m > 1 ? ' × ' + r.m : '') + '</span>';
       o += '<button type="button" class="recrow" data-act="day" data-d="' + k + '"><span>' + md2(k) + ' (' + wd(k) + ')</span>' + tag + '</button>';
@@ -632,7 +679,7 @@ function renderCal(){
     if(s === t) cls += ' today';
     if(!started(s)) cls += ' dim';
     if(started(s)){
-      if(rec && rec.k === 'leave'){ tag = '<span class="t leave">월차</span>'; aria += ', 월차 사용'; }
+      if(rec && rec.k === 'leave'){ tag = '<span class="t leave">' + esc(leaveShort(rec)) + '</span>'; aria += ', ' + leaveLabel(rec) + ' 사용'; }
       else if(rec && rec.k === 'absent'){ tag = '<span class="t absent">결근</span>'; aria += ', 결근'; }
       else{
         if(rec && rec.x > 0){ tag = '<span class="t extra">+' + rec.x + 'h</span>'; aria += ', 추가근무 ' + rec.x + '시간'; }
@@ -644,7 +691,7 @@ function renderCal(){
     o += '<button type="button" class="' + cls + '" data-act="day" data-d="' + s + '" aria-label="' + esc(aria) + '"><span class="n">' + d + '</span>' + tag + '</button>';
   }
   o += '</div>';
-  o += '<div class="legend"><span class="chip extra">추가근무</span><span class="chip leave">월차</span><span class="chip absent">결근</span><span class="chip hol">공휴일</span></div>';
+  o += '<div class="legend"><span class="chip extra">추가근무</span><span class="chip leave">월차·반차</span><span class="chip absent">결근</span><span class="chip hol">공휴일</span></div>';
   var r = payOf(y, m, null), mi = monthInfo(y, m), holCnt = 0;
   for(var k = 1; k <= dim; k++){ var ss = iso(y, m, k); if(holName(ss) && dowOf(ss) >= 1 && dowOf(ss) <= 5) holCnt++; }
   var note;
@@ -654,7 +701,7 @@ function renderCal(){
   else note = '결근이 없으면 ' + md(mi.last) + '에 월차 +1일이 생겨요.';
   o += '<section class="card sumcard"><h2>' + (m + 1) + '월 요약</h2><dl class="lines">' +
     '<div class="ln"><dt>근무일</dt><dd>' + (r.workDays + r.leaveDays) + '일</dd></div>' +
-    '<div class="ln"><dt>월차 사용</dt><dd>' + r.leaveDays + '일</dd></div>' +
+    '<div class="ln"><dt>월차 사용</dt><dd>' + leaveText(r.leaveMin) + '</dd></div>' +
     '<div class="ln"><dt>결근</dt><dd>' + r.absentDays + '일</dd></div>' +
     '<div class="ln"><dt>추가근무</dt><dd>' + r.extraH + '시간</dd></div>' +
     '<div class="ln"><dt>평일 공휴일</dt><dd>' + holCnt + '일</dd></div>' +
@@ -770,14 +817,18 @@ function describeDay(s){
   return base + '근무일이에요. 기록이 없으면 ' + st.settings.hours + '시간 근무로 계산해요.';
 }
 function openSheet(date, preset){
-  sh = {date:date, kind:'none', x:1, m:st.settings.defMult};
+  sh = {date:date, kind:'none', x:1, m:st.settings.defMult, lt:'day', lh:1, lmin:30};
   loadRecordInto(date, false);
   if(sh.kind === 'none' && preset){ sh.kind = preset; }
   renderSheet();
 }
 function loadRecordInto(date, keepKind){
   var r = st.records[date];
-  if(r && r.k === 'leave') sh.kind = 'leave';
+  if(r && r.k === 'leave'){
+    sh.kind = 'leave'; sh.lt = r.lm ? r.p : 'day';
+    if(r.p === 'hour') sh.lh = r.lm / 60;
+    if(r.p === 'min') sh.lmin = r.lm;
+  }
   else if(r && r.k === 'absent') sh.kind = 'absent';
   else if(r && r.x > 0){ sh.kind = 'extra'; sh.x = r.x; sh.m = r.m || 1; }
   else if(!keepKind) sh.kind = 'none';
@@ -790,16 +841,28 @@ function previewText(){
     var x = sh.x > 0 ? sh.x : 0;
     return '추가근무 ' + x + '시간 × ' + sh.m + '배 = 세전 +' + won(x * sh.m * wage);
   }
-  if(sh.kind === 'leave') return '월차 1일을 쓰면 잔여가 1일 줄고, 그날은 ' + S.hours + '시간 근무한 것으로 쳐서 ' + won(S.hours * wage) + '이 급여에 들어가요.';
+  if(sh.kind === 'leave'){
+    var lm = sheetLeaveMin();
+    if(sh.lt === 'day') return '월차 1일을 쓰면 잔여가 1일 줄고, 그날은 ' + S.hours + '시간 근무한 것으로 쳐서 ' + won(S.hours * wage) + '이 급여에 들어가요.';
+    if(!(lm >= 1 && lm < dayMin())) return '';
+    return (sh.lt === 'half' ? '반차' : sh.lt === 'hour' ? '시차' : '분차') + ' ' + hmText(lm) + '을 쓰면 잔여 월차에서 ' + hmText(lm) +
+      '이 빠져요(월차 1일 = ' + hmText(dayMin()) + '). 그날 급여는 그대로 ' + S.hours + '시간으로 계산해요.';
+  }
   if(sh.kind === 'absent') return '결근하면 그날 급여가 빠지고, 그 주 주휴수당과 그 달 월차가 생기지 않아요.';
   return '';
+}
+function sheetLeaveMin(){
+  if(sh.lt === 'half') return Math.round(dayMin() / 2);
+  if(sh.lt === 'hour') return Math.round((sh.lh || 0) * 60);
+  if(sh.lt === 'min') return Math.round(sh.lmin || 0);
+  return dayMin();
 }
 function renderSheet(){
   var s = sh.date, sched = isSched(s), can = started(s);
   var seg = [
     ['none', sched ? '정상 근무' : '기록 없음', true],
     ['extra', '추가근무', can],
-    ['leave', '월차 사용', sched],
+    ['leave', '월차·반차', sched],
     ['absent', '결근', sched]
   ].map(function(b){
     return '<button type="button" data-act="sk" data-k="' + b[0] + '" aria-pressed="' + (sh.kind === b[0]) + '"' + (b[2] ? '' : ' disabled') + '>' + b[1] + '</button>';
@@ -811,6 +874,26 @@ function renderSheet(){
       '<div class="field"><label for="sx">직접 입력(시간)</label><input type="number" id="sx" min="0.25" max="16" step="0.25" value="' + sh.x + '" inputmode="decimal"></div>' +
       '<div class="lbl" style="margin-top:8px">수당 배율</div><div class="pick">' +
       [1, 1.5, 2].map(function(v){ return '<button type="button" data-act="sm" data-v="' + v + '" aria-pressed="' + (sh.m === v) + '">' + v + '배</button>'; }).join('') + '</div>';
+  }
+  if(sh.kind === 'leave'){
+    var H = st.settings.hours;
+    ex = '<div class="lbl">얼마나 쓸까요?</div><div class="pick lv">' +
+      [['day', '월차 1일'], ['half', '반차'], ['hour', '시차'], ['min', '분차']].map(function(b){
+        return '<button type="button" data-act="slt" data-v="' + b[0] + '" aria-pressed="' + (sh.lt === b[0]) + '">' + b[1] + '</button>';
+      }).join('') + '</div>';
+    if(sh.lt === 'half') ex += '<p class="muted" style="font-size:.88rem">반나절(' + hmText(dayMin() / 2) + ')을 써요.</p>';
+    if(sh.lt === 'hour'){
+      var hs = [];
+      for(var hv = 1; hv < H; hv++) hs.push(hv);
+      ex += '<div class="lbl">시간</div><div class="pick lv">' +
+        hs.map(function(v){ return '<button type="button" data-act="slh" data-v="' + v + '" aria-pressed="' + (sh.lh === v) + '">' + v + '시간</button>'; }).join('') + '</div>' +
+        '<div class="field"><label for="slh">직접 입력(시간)</label><input type="number" id="slh" min="0.5" max="' + (H - 0.5) + '" step="0.5" value="' + sh.lh + '" inputmode="decimal"></div>';
+    }
+    if(sh.lt === 'min'){
+      ex += '<div class="lbl">분</div><div class="pick lv">' +
+        [10, 20, 30, 40, 50].map(function(v){ return '<button type="button" data-act="slm" data-v="' + v + '" aria-pressed="' + (sh.lmin === v) + '">' + v + '분</button>'; }).join('') + '</div>' +
+        '<div class="field"><label for="slm">직접 입력(분)</label><input type="number" id="slm" min="1" max="' + (dayMin() - 1) + '" step="1" value="' + sh.lmin + '" inputmode="numeric"></div>';
+    }
   }
   var has = !!st.records[s];
   $('sheetRoot').innerHTML = '<div class="backdrop" data-act="sclose"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="shT" tabindex="-1">' +
@@ -840,6 +923,15 @@ function saveSheet(){
   }else if(sh.kind === 'leave'){
     if(!isSched(s)){ warn('월차는 근무일에만 쓸 수 있어요.'); return; }
     rec = {k:'leave', x:0, m:1};
+    if(sh.lt !== 'day'){
+      var lm = sheetLeaveMin();
+      if(!(lm >= 1 && lm < dayMin())){
+        warn(sh.lt === 'hour' ? '시차는 0보다 크고 하루 근무시간(' + st.settings.hours + '시간)보다 짧게 넣어 주세요.'
+          : '분차는 1분 이상, ' + dayMin() + '분 미만으로 넣어 주세요.');
+        return;
+      }
+      rec.lm = lm; rec.p = sh.lt;
+    }
   }else if(sh.kind === 'absent'){
     if(!isSched(s)){ warn('결근은 근무일에만 기록할 수 있어요.'); return; }
     rec = {k:'absent', x:0, m:1};
@@ -902,6 +994,9 @@ document.addEventListener('click', function(e){
   if(act === 'sk'){ sh.kind = el.getAttribute('data-k'); renderSheet(); return; }
   if(act === 'sx'){ sh.x = parseFloat(el.getAttribute('data-v')); renderSheet(); return; }
   if(act === 'sm'){ sh.m = parseFloat(el.getAttribute('data-v')); renderSheet(); return; }
+  if(act === 'slt'){ sh.lt = el.getAttribute('data-v'); renderSheet(); return; }
+  if(act === 'slh'){ sh.lh = parseFloat(el.getAttribute('data-v')); renderSheet(); return; }
+  if(act === 'slm'){ sh.lmin = parseInt(el.getAttribute('data-v'), 10); renderSheet(); return; }
   if(act === 'ssave'){ saveSheet(); return; }
   if(act === 'sclear'){ clearSheet(); return; }
   if(act === 'cfgYear'){ cfgYear = parseInt(el.getAttribute('data-y'), 10); render(); return; }
@@ -948,7 +1043,14 @@ document.addEventListener('click', function(e){
     st = defaultState(); save(); calY = null; cfgYear = null; render(); toast('모두 지웠어요'); return;
   }
 });
+function syncPick(act, val){
+  var pk = document.querySelectorAll('.pick button[data-act="' + act + '"]');
+  for(var i = 0; i < pk.length; i++) pk[i].setAttribute('aria-pressed', String(parseFloat(pk[i].getAttribute('data-v')) === val));
+  var pv = $('pv'); if(pv){ pv.textContent = previewText(); pv.hidden = !pv.textContent; }
+}
 document.addEventListener('input', function(e){
+  if(e.target && e.target.id === 'slh' && sh){ sh.lh = parseFloat(e.target.value) || 0; syncPick('slh', sh.lh); return; }
+  if(e.target && e.target.id === 'slm' && sh){ sh.lmin = parseInt(e.target.value, 10) || 0; syncPick('slm', sh.lmin); return; }
   if(e.target && e.target.id === 'sx' && sh){
     sh.x = parseFloat(e.target.value) || 0;
     var pv = $('pv'); if(pv){ pv.textContent = previewText(); pv.hidden = !pv.textContent; }
@@ -974,7 +1076,7 @@ document.addEventListener('change', function(e){
     S.start = el.value;
     var bad = leaveViolation();
     if(bad){ toast('시작일을 바꾸면 ' + md(bad) + ' 월차가 부족해져요. 월차 기록을 확인해 주세요.'); }
-  }else if(k === 'hours'){ num = parseFloat(el.value); if(!(num >= 1 && num <= 12)){ toast('1시간에서 12시간 사이로 넣어 주세요.'); el.value = S.hours; return; } S.hours = num; }
+  }else if(k === 'hours'){ num = parseFloat(el.value); if(!(num >= 1 && num <= 12)){ toast('1시간에서 12시간 사이로 넣어 주세요.'); el.value = S.hours; return; } S.hours = num; if(leaveViolation()) toast('근무시간을 바꾸면 월차 환산이 달라져서 잔여가 부족해지는 날이 있어요. 월차 기록을 확인해 주세요.'); }
   else if(k === 'opening'){ num = parseInt(el.value, 10); if(isNaN(num) || num < 0){ toast('0 이상의 숫자를 넣어 주세요.'); el.value = S.opening; return; } S.opening = num; }
   else if(k === 'payDay'){ num = parseInt(el.value, 10); if(!(num >= 1 && num <= 28)){ toast('급여일은 1일에서 28일 사이로 넣어 주세요.'); el.value = S.payDay; return; } S.payDay = num; }
   else if(k === 'otherPct'){ num = parseFloat(el.value); if(isNaN(num) || num < 0 || num > 30){ toast('0에서 30 사이로 넣어 주세요.'); el.value = S.otherPct; return; } S.otherPct = num; }
@@ -990,7 +1092,7 @@ if(typeof window !== 'undefined' && window.__TEST__){
   window.__api = {st:function(){ return st; }, setSt:function(s){ st = s; cfgCache = {}; }, defaultState:defaultState, monthCalc:monthCalc, payOf:payOf,
     balance:balance, earnedLeave:earnedLeave, leaveViolation:leaveViolation, weeklyPart:weeklyPart, deductions:deductions, isBase:isBase,
     payDateFor:payDateFor, nextPay:nextPay, holName:holName, monthInfo:monthInfo, renderHome:renderHome, renderCal:renderCal, renderPay:renderPay,
-    renderSettings:renderSettings, cumulativeNet:cumulativeNet, getCfg:getCfg};
+    renderSettings:renderSettings, cumulativeNet:cumulativeNet, getCfg:getCfg, balanceMin:balanceMin, leaveText:leaveText};
 }
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
