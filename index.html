@@ -250,6 +250,7 @@ var DEFAULT_YEARS = {
 function defaultState(){
   return {v:1,
     settings:{start:'', hours:6, opening:0, payDay:10, weeklyPay:true, holidayPay:false, defMult:1, otherPct:0,
+      payType:'hourly', monthlyFrom:'', monthlyPay:0,
       apply:{pension:true, health:true, care:true, employment:true}},
     years:{}, records:{}};
 }
@@ -401,6 +402,48 @@ function weeklyPart(y, m, lim){
   }
   return out;
 }
+/* ---------- 월급제 ----------
+   월 기준시간 = (주 근무시간 + 주휴시간) × 365 ÷ 7 ÷ 12  (하루 8시간이면 209시간)
+   통상시급 = 월급 ÷ 월 기준시간 */
+function monthHours(){ return Math.round(st.settings.hours * 6 * 365 / 7 / 12); }
+function isMonthly(y, m){
+  var S = st.settings;
+  return S.payType === 'monthly' && S.monthlyPay > 0 && (!S.monthlyFrom || iso(y, m, 1).slice(0, 7) >= S.monthlyFrom);
+}
+function hourRate(y, m){ return isMonthly(y, m) ? st.settings.monthlyPay / monthHours() : getCfg(y).minWage; }
+function defaultMonthlyPay(ym){
+  var y = ym ? +ym.slice(0, 4) : +todayIso().slice(0, 4) + 1;
+  return Math.ceil(getCfg(y).minWage * monthHours() / 10) * 10;
+}
+function monthlyCalc(y, m, lim){
+  var S = st.settings, H = S.hours, rate = hourRate(y, m), dim = daysIn(y, m);
+  var r = {y:y, m:m, monthly:true, rate:rate, workDays:0, leaveDays:0, partCnt:0, leaveMin:0, absentDays:0, holidayDays:0,
+    extraH:0, extraPay:0, basePay:0, weeklyPay:0, weeklyCnt:0, holidayPay:0, sched:0, lim:lim,
+    paidDays:0, dim:dim, absentDed:0, absentWeeks:0};
+  var weeks = {};
+  for(var d = 1; d <= dim; d++){
+    var s = iso(y, m, d);
+    if(s < S.start || s > lim) continue;
+    r.paidDays++;                                   // 월급은 달력 날짜 기준으로 일할 계산
+    var rec = st.records[s];
+    if(isBase(s)){
+      r.sched++;
+      if(rec && rec.k === 'absent'){ r.absentDays++; weeks[addDays(s, -(dowOf(s) - 1))] = 1; }
+      else if(rec && rec.k === 'leave'){
+        r.leaveMin += leaveMin(rec);
+        if(rec.lm){ r.partCnt++; r.workDays++; } else r.leaveDays++;
+      }else r.workDays++;
+    }
+    if(rec && rec.x > 0){ r.extraH += rec.x; r.extraPay += rec.x * (rec.m || 1) * rate; }
+  }
+  r.basePay = Math.round(S.monthlyPay * r.paidDays / dim);
+  r.absentWeeks = (H * 5 >= 15) ? Object.keys(weeks).length : 0;   // 결근한 주는 주휴수당도 빠져요
+  r.absentDed = Math.round((r.absentDays + r.absentWeeks) * H * rate);
+  r.gross = Math.max(0, r.basePay - r.absentDed + r.extraPay);
+  r.ded = deductions(r.gross, y);
+  r.net = r.gross - r.ded.total;
+  return r;
+}
 function cut10(x){ return Math.floor((x + 1e-6) / 10) * 10; }
 function deductions(gross, y){
   var c = getCfg(y), A = st.settings.apply;
@@ -421,6 +464,7 @@ function monthCalc(y, m, limit){
   var r = {y:y, m:m, workDays:0, leaveDays:0, partCnt:0, leaveMin:0, absentDays:0, holidayDays:0, extraH:0, extraPay:0,
     basePay:0, weeklyPay:0, weeklyCnt:0, holidayPay:0, sched:0, lim:lim};
   if(!S.start) { r.gross = 0; r.ded = deductions(0, y); r.net = 0; return r; }
+  if(isMonthly(y, m)) return monthlyCalc(y, m, lim);
   for(var d = 1; d <= dim; d++){
     var s = iso(y, m, d);
     if(s < S.start || s > lim) continue;
@@ -563,10 +607,18 @@ function stubLines(r, withNet){
   var inc = [];
   if(r.leaveDays) inc.push('월차 ' + r.leaveDays + '일');
   if(r.partCnt) inc.push('반차·시차·분차 ' + r.partCnt + '회');
-  ln('', '기본급', days + '일 × ' + H + '시간' + (inc.length ? ', ' + inc.join(', ') + ' 포함' : ''), won(r.basePay));
-  if(S.weeklyPay) ln('', '주휴수당', r.weeklyCnt + '주 개근', won(r.weeklyPay));
-  if(S.holidayPay && r.holidayDays) ln('', '공휴일 유급', r.holidayDays + '일', won(r.holidayPay));
-  if(r.extraH > 0) ln('', '추가근무', r.extraH + '시간', won(r.extraPay));
+  if(r.monthly){
+    ln('', '월급', (r.paidDays < r.dim ? r.paidDays + '/' + r.dim + '일 일할 계산' : '주휴수당·공휴일 포함') +
+      (inc.length ? ', ' + inc.join(', ') + ' 사용' : ''), won(r.basePay));
+    if(r.absentDays) ln('minus', '결근 공제', r.absentDays + '일' + (r.absentWeeks ? ' + 주휴 ' + r.absentWeeks + '일' : '') +
+      ' × ' + H + '시간 × 통상시급 ' + won(r.rate), minus(r.absentDed));
+    if(r.extraH > 0) ln('', '추가근무', r.extraH + '시간 × 통상시급 ' + won(r.rate), won(r.extraPay));
+  }else{
+    ln('', '기본급', days + '일 × ' + H + '시간' + (inc.length ? ', ' + inc.join(', ') + ' 포함' : ''), won(r.basePay));
+    if(S.weeklyPay) ln('', '주휴수당', r.weeklyCnt + '주 개근', won(r.weeklyPay));
+    if(S.holidayPay && r.holidayDays) ln('', '공휴일 유급', r.holidayDays + '일', won(r.holidayPay));
+    if(r.extraH > 0) ln('', '추가근무', r.extraH + '시간', won(r.extraPay));
+  }
   ln('sum', '세전 합계', '', won(r.gross));
   var A = S.apply, d = r.ded;
   if(A.pension) ln('minus', '국민연금', '', minus(d.pension));
@@ -745,7 +797,20 @@ function renderSettings(){
     '<div class="two"><div class="field"><label for="f_open">시작 시점 월차(일)</label><input type="number" id="f_open" data-k="opening" min="0" step="1" value="' + S.opening + '" inputmode="numeric"></div>' +
     '<div class="field"><label for="f_pay">급여일(매월)</label><input type="number" id="f_pay" data-k="payDay" min="1" max="28" step="1" value="' + S.payDay + '" inputmode="numeric"></div></div>' +
     '<small class="muted">평일 주 5일 근무이고, 공휴일은 쉬는 날이에요. 급여는 한 달 근무분을 다음 달 급여일에 받는 것으로 계산해요.</small>';
-  o += '<h2 class="sec-t">급여 계산</h2>' +
+  var mOn = S.payType === 'monthly';
+  o += '<h2 class="sec-t">급여 방식</h2>' +
+    '<div class="field"><label for="f_ptype">급여 방식</label><select id="f_ptype" data-k="payType">' +
+    '<option value="hourly"' + (mOn ? '' : ' selected') + '>시급제</option><option value="monthly"' + (mOn ? ' selected' : '') + '>월급제</option></select>' +
+    '<small>' + (mOn ? '시작 월부터 월급제로, 그 전 달은 시급제로 계산해요.' : '월급제로 바꾸면 시작 월부터 월급으로 계산하고, 그 전 기록은 시급제로 그대로 둬요.') + '</small></div>';
+  if(mOn){
+    var mfY = S.monthlyFrom ? +S.monthlyFrom.slice(0, 4) : +t.slice(0, 4), rate = S.monthlyPay / monthHours(), mw = getCfg(mfY).minWage;
+    o += '<div class="two"><div class="field"><label for="f_mfrom">월급제 시작 월</label><input type="month" id="f_mfrom" data-k="monthlyFrom" value="' + esc(S.monthlyFrom) + '"></div>' +
+      '<div class="field"><label for="f_mpay">월급(세전, 원)</label><input type="number" id="f_mpay" data-k="monthlyPay" min="0" step="1000" value="' + S.monthlyPay + '" inputmode="numeric"></div></div>' +
+      '<p class="pv">월 기준시간 ' + monthHours() + '시간(주휴 포함) · 통상시급 ' + won(rate) + '<br>' +
+      '<small class="muted">추가근무는 통상시급으로 계산하고, 결근하면 그날 하루치와 그 주 주휴 하루치를 빼요. 주휴수당·공휴일은 월급에 들어 있어서 따로 더하지 않아요. 중간에 시작한 달은 날짜 수로 나눠 계산해요.</small></p>' +
+      (rate + 0.5 < mw ? '<p class="banner">통상시급이 ' + mfY + '년 최저시급(' + won(mw) + ')보다 낮아요. 하루 ' + S.hours + '시간 기준 최저 월급은 ' + won(defaultMonthlyPay(String(mfY))) + '이에요.</p>' : '');
+  }
+  o += '<h2 class="sec-t">급여 계산</h2>' + (mOn ? '<small class="muted">아래 주휴수당·공휴일 설정은 시급제 달에만 써요.</small>' : '') +
     '<label class="chk"><input type="checkbox" data-k="weeklyPay"' + (S.weeklyPay ? ' checked' : '') + '><span>주휴수당 포함<small>그 주 근무일을 모두 채우면 하루치가 더해져요. 주 15시간 이상이면 법으로 받을 수 있어요.</small></span></label>' +
     '<label class="chk"><input type="checkbox" data-k="holidayPay"' + (S.holidayPay ? ' checked' : '') + '><span>공휴일 유급 처리<small>회사가 평일 공휴일을 유급으로 주면 켜세요. 5인 이상 사업장은 대부분 해당돼요.</small></span></label>' +
     '<div class="field"><label for="f_mult">추가근무 기본 배율</label><select id="f_mult" data-k="defMult">' +
@@ -836,7 +901,7 @@ function loadRecordInto(date, keepKind){
 function previewText(){
   var S = st.settings, s = sh.date;
   if(!s || !started(s)) return '';
-  var wage = getCfg(+s.slice(0,4)).minWage;
+  var wage = hourRate(+s.slice(0,4), +s.slice(5,7) - 1);
   if(sh.kind === 'extra'){
     var x = sh.x > 0 ? sh.x : 0;
     return '추가근무 ' + x + '시간 × ' + sh.m + '배 = 세전 +' + won(x * sh.m * wage);
@@ -1079,6 +1144,16 @@ document.addEventListener('change', function(e){
   }else if(k === 'hours'){ num = parseFloat(el.value); if(!(num >= 1 && num <= 12)){ toast('1시간에서 12시간 사이로 넣어 주세요.'); el.value = S.hours; return; } S.hours = num; if(leaveViolation()) toast('근무시간을 바꾸면 월차 환산이 달라져서 잔여가 부족해지는 날이 있어요. 월차 기록을 확인해 주세요.'); }
   else if(k === 'opening'){ num = parseInt(el.value, 10); if(isNaN(num) || num < 0){ toast('0 이상의 숫자를 넣어 주세요.'); el.value = S.opening; return; } S.opening = num; }
   else if(k === 'payDay'){ num = parseInt(el.value, 10); if(!(num >= 1 && num <= 28)){ toast('급여일은 1일에서 28일 사이로 넣어 주세요.'); el.value = S.payDay; return; } S.payDay = num; }
+  else if(k === 'payType'){
+    S.payType = el.value === 'monthly' ? 'monthly' : 'hourly';
+    if(S.payType === 'monthly'){
+      if(!S.monthlyFrom) S.monthlyFrom = (+todayIso().slice(0, 4) + 1) + '-01';   // 기본: 내년 1월부터
+      if(!(S.monthlyPay > 0)) S.monthlyPay = defaultMonthlyPay(S.monthlyFrom);
+    }
+    save(); render(); toast(S.payType === 'monthly' ? S.monthlyFrom.slice(0, 4) + '년 ' + (+S.monthlyFrom.slice(5, 7)) + '월부터 월급제로 계산해요' : '시급제로 계산해요'); return;
+  }
+  else if(k === 'monthlyFrom'){ if(!/^\d{4}-\d{2}$/.test(el.value)){ toast('시작 월을 골라 주세요.'); el.value = S.monthlyFrom; return; } S.monthlyFrom = el.value; save(); render(); toast('저장했어요'); return; }
+  else if(k === 'monthlyPay'){ num = Math.round(parseFloat(el.value)); if(!(num > 0)){ toast('월급을 넣어 주세요.'); el.value = S.monthlyPay; return; } S.monthlyPay = num; save(); render(); toast('저장했어요'); return; }
   else if(k === 'otherPct'){ num = parseFloat(el.value); if(isNaN(num) || num < 0 || num > 30){ toast('0에서 30 사이로 넣어 주세요.'); el.value = S.otherPct; return; } S.otherPct = num; }
   else if(k === 'defMult'){ S.defMult = parseFloat(el.value) || 1; }
   else if(k === 'weeklyPay' || k === 'holidayPay'){ S[k] = !!el.checked; }
@@ -1092,7 +1167,7 @@ if(typeof window !== 'undefined' && window.__TEST__){
   window.__api = {st:function(){ return st; }, setSt:function(s){ st = s; cfgCache = {}; }, defaultState:defaultState, monthCalc:monthCalc, payOf:payOf,
     balance:balance, earnedLeave:earnedLeave, leaveViolation:leaveViolation, weeklyPart:weeklyPart, deductions:deductions, isBase:isBase,
     payDateFor:payDateFor, nextPay:nextPay, holName:holName, monthInfo:monthInfo, renderHome:renderHome, renderCal:renderCal, renderPay:renderPay,
-    renderSettings:renderSettings, cumulativeNet:cumulativeNet, getCfg:getCfg, balanceMin:balanceMin, leaveText:leaveText};
+    renderSettings:renderSettings, cumulativeNet:cumulativeNet, getCfg:getCfg, isMonthly:isMonthly, monthHours:monthHours, balanceMin:balanceMin, leaveText:leaveText};
 }
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
