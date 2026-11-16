@@ -243,14 +243,23 @@ var DEFAULT_YEARS = {
       ['2026-09-24','추석 연휴'],['2026-09-25','추석'],['2026-09-26','추석 연휴'],
       ['2026-10-03','개천절'],['2026-10-05','대체공휴일'],['2026-10-09','한글날'],['2026-12-25','성탄절']
     ]},
-  2027: {minWage:10700, pension:5, health:3.595, care:13.14, employment:0.9, provisional:true, holidays:[]}
+  2027: {minWage:10700, pension:5, health:3.595, care:13.14, employment:0.9, provisional:true,
+    holidays:[
+      ['2027-01-01','신정'],['2027-02-06','설날 연휴'],['2027-02-07','설날'],['2027-02-08','설날 연휴'],['2027-02-09','대체공휴일'],
+      ['2027-03-01','삼일절'],['2027-05-01','노동절'],['2027-05-03','대체공휴일'],['2027-05-05','어린이날'],
+      ['2027-05-13','부처님오신날'],['2027-06-06','현충일'],['2027-07-17','제헌절'],['2027-07-19','대체공휴일'],
+      ['2027-08-15','광복절'],['2027-08-16','대체공휴일'],
+      ['2027-09-14','추석 연휴'],['2027-09-15','추석'],['2027-09-16','추석 연휴'],
+      ['2027-10-03','개천절'],['2027-10-04','대체공휴일'],['2027-10-09','한글날'],['2027-10-11','대체공휴일'],
+      ['2027-12-25','성탄절'],['2027-12-27','대체공휴일']
+    ]}
 };
 
 /* ---------- 데이터 ---------- */
 function defaultState(){
   return {v:1,
     settings:{start:'', hours:6, opening:0, payDay:10, weeklyPay:true, holidayPay:false, defMult:1, otherPct:0,
-      payType:'hourly', monthlyFrom:'', monthlyPay:0,
+      payType:'hourly', monthlyFrom:'', monthlyPay:0, monthlyAuto:true,
       apply:{pension:true, health:true, care:true, employment:true}},
     years:{}, records:{}};
 }
@@ -304,6 +313,19 @@ function mergeState(d, p){
     });
   }
   d.years = cleanYears(p.years);
+  // 연도 값을 고치면서 공휴일이 빈 채로 저장된 해는 기본 공휴일로 채워요
+  Object.keys(d.years).forEach(function(y){
+    var df = DEFAULT_YEARS[y];
+    if(!d.years[y].holidays.length && df && df.holidays.length)
+      d.years[y].holidays = df.holidays.map(function(h){ return {d:h[0], n:h[1]}; });
+  });
+  // 예전 데이터: 월급이 비었거나 시급 × 기준시간과 같으면 자동 계산으로 둬요
+  if(!p.settings || typeof p.settings.monthlyAuto !== 'boolean'){
+    var S = d.settings, fy = S.monthlyFrom ? S.monthlyFrom.slice(0, 4) : '';
+    var c = d.years[fy] || DEFAULT_YEARS[fy];
+    var def = c ? Math.ceil(c.minWage * Math.round(S.hours * 6 * 365 / 7 / 12) / 10) * 10 : -1;
+    S.monthlyAuto = !(S.monthlyPay > 0) || S.monthlyPay === def;
+  }
   d.records = cleanRecords(p.records);
   return d;
 }
@@ -408,9 +430,14 @@ function weeklyPart(y, m, lim){
 function monthHours(){ return Math.round(st.settings.hours * 6 * 365 / 7 / 12); }
 function isMonthly(y, m){
   var S = st.settings;
-  return S.payType === 'monthly' && S.monthlyPay > 0 && (!S.monthlyFrom || iso(y, m, 1).slice(0, 7) >= S.monthlyFrom);
+  return S.payType === 'monthly' && monthlyPayOf(y) > 0 && (!S.monthlyFrom || iso(y, m, 1).slice(0, 7) >= S.monthlyFrom);
 }
-function hourRate(y, m){ return isMonthly(y, m) ? st.settings.monthlyPay / monthHours() : getCfg(y).minWage; }
+/* 월급: 자동이면 그해 시급 × 월 기준시간(시급·근무시간을 바꾸면 따라 바뀜), 아니면 직접 넣은 금액 */
+function monthlyPayOf(y){
+  var S = st.settings;
+  return S.monthlyAuto ? Math.ceil(getCfg(y).minWage * monthHours() / 10) * 10 : S.monthlyPay;
+}
+function hourRate(y, m){ return isMonthly(y, m) ? monthlyPayOf(y) / monthHours() : getCfg(y).minWage; }
 function defaultMonthlyPay(ym){
   var y = ym ? +ym.slice(0, 4) : +todayIso().slice(0, 4) + 1;
   return Math.ceil(getCfg(y).minWage * monthHours() / 10) * 10;
@@ -436,7 +463,7 @@ function monthlyCalc(y, m, lim){
     }
     if(rec && rec.x > 0){ r.extraH += rec.x; r.extraPay += rec.x * (rec.m || 1) * rate; }
   }
-  r.basePay = Math.round(S.monthlyPay * r.paidDays / dim);
+  r.basePay = Math.round(monthlyPayOf(y) * r.paidDays / dim);
   r.absentWeeks = (H * 5 >= 15) ? Object.keys(weeks).length : 0;   // 결근한 주는 주휴수당도 빠져요
   r.absentDed = Math.round((r.absentDays + r.absentWeeks) * H * rate);
   r.gross = Math.max(0, r.basePay - r.absentDed + r.extraPay);
@@ -711,6 +738,9 @@ function renderHome(){
   return o;
 }
 
+/* 달력 칸이 좁아서 긴 공휴일 이름은 줄여 보여 줘요(날짜를 누르면 원래 이름이 나와요) */
+var HOL_SHORT = {'대체공휴일':'대체', '설날 연휴':'연휴', '추석 연휴':'연휴', '부처님오신날':'석탄일', '지방선거일':'선거일'};
+function holShort(n){ return HOL_SHORT[n] || n; }
 var calY = null, calM = null;
 function renderCal(){
   var S = st.settings, t = todayIso();
@@ -735,11 +765,11 @@ function renderCal(){
       else if(rec && rec.k === 'absent'){ tag = '<span class="t absent">결근</span>'; aria += ', 결근'; }
       else{
         if(rec && rec.x > 0){ tag = '<span class="t extra">+' + rec.x + 'h</span>'; aria += ', 추가근무 ' + rec.x + '시간'; }
-        else if(hn){ tag = '<span class="t hol">' + esc(hn) + '</span>'; aria += ', ' + hn; }
+        else if(hn){ tag = '<span class="t hol">' + esc(holShort(hn)) + '</span>'; aria += ', ' + hn; }
         else if(isBase(s)){ tag = '<span class="t h6">' + S.hours + 'h</span>'; aria += ', 기본 ' + S.hours + '시간 근무'; }
       }
       if(hn && rec && rec.x > 0) aria += ', ' + hn;
-    }else if(hn){ tag = '<span class="t hol">' + esc(hn) + '</span>'; }
+    }else if(hn){ tag = '<span class="t hol">' + esc(holShort(hn)) + '</span>'; }
     o += '<button type="button" class="' + cls + '" data-act="day" data-d="' + s + '" aria-label="' + esc(aria) + '"><span class="n">' + d + '</span>' + tag + '</button>';
   }
   o += '</div>';
@@ -803,12 +833,14 @@ function renderSettings(){
     '<option value="hourly"' + (mOn ? '' : ' selected') + '>시급제</option><option value="monthly"' + (mOn ? ' selected' : '') + '>월급제</option></select>' +
     '<small>' + (mOn ? '시작 월부터 월급제로, 그 전 달은 시급제로 계산해요.' : '월급제로 바꾸면 시작 월부터 월급으로 계산하고, 그 전 기록은 시급제로 그대로 둬요.') + '</small></div>';
   if(mOn){
-    var mfY = S.monthlyFrom ? +S.monthlyFrom.slice(0, 4) : +t.slice(0, 4), rate = S.monthlyPay / monthHours(), mw = getCfg(mfY).minWage;
+    var mfY = S.monthlyFrom ? +S.monthlyFrom.slice(0, 4) : +t.slice(0, 4), mPay = monthlyPayOf(mfY), rate = mPay / monthHours(), mw = getCfg(mfY).minWage;
     o += '<div class="two"><div class="field"><label for="f_mfrom">월급제 시작 월</label><input type="month" id="f_mfrom" data-k="monthlyFrom" value="' + esc(S.monthlyFrom) + '"></div>' +
-      '<div class="field"><label for="f_mpay">월급(세전, 원)</label><input type="number" id="f_mpay" data-k="monthlyPay" min="0" step="1000" value="' + S.monthlyPay + '" inputmode="numeric"><small>비워 두면 시급 × ' + monthHours() + '시간으로 맞춰요.</small></div></div>' +
+      '<div class="field"><label for="f_mpay">월급(세전, 원)</label><input type="number" id="f_mpay" data-k="monthlyPay" min="0" step="1000" value="' + mPay + '" inputmode="numeric"><small>' + (S.monthlyAuto
+        ? '시급 × ' + monthHours() + '시간으로 자동 계산 중이에요. 연도별 시급이나 근무시간을 바꾸면 같이 바뀌어요.'
+        : '직접 넣은 금액이에요. 비우면 시급 × ' + monthHours() + '시간 자동 계산으로 돌아가요.') + '</small></div></div>' +
       '<p class="pv">월 기준시간 ' + monthHours() + '시간(주휴 포함) · 통상시급 ' + won(rate) + '<br>' +
       '<small class="muted">추가근무는 통상시급으로 계산하고, 결근하면 그날 하루치와 그 주 주휴 하루치를 빼요. 주휴수당·공휴일은 월급에 들어 있어서 따로 더하지 않아요. 중간에 시작한 달은 날짜 수로 나눠 계산해요.</small></p>' +
-      (rate + 0.5 < mw ? '<p class="banner">통상시급이 ' + mfY + '년 최저시급(' + won(mw) + ')보다 낮아요. 하루 ' + S.hours + '시간 기준 최저 월급은 ' + won(defaultMonthlyPay(String(mfY))) + '이에요.</p>' : '');
+      (!S.monthlyAuto && rate + 0.5 < mw ? '<p class="banner">통상시급이 ' + mfY + '년 최저시급(' + won(mw) + ')보다 낮아요. 하루 ' + S.hours + '시간 기준 최저 월급은 ' + won(defaultMonthlyPay(String(mfY))) + '이에요.</p>' : '');
   }
   o += '<h2 class="sec-t">급여 계산</h2>' + (mOn ? '<small class="muted">아래 주휴수당·공휴일 설정은 시급제 달에만 써요.</small>' : '') +
     '<label class="chk"><input type="checkbox" data-k="weeklyPay"' + (S.weeklyPay ? ' checked' : '') + '><span>주휴수당 포함<small>그 주 근무일을 모두 채우면 하루치가 더해져요. 주 15시간 이상이면 법으로 받을 수 있어요.</small></span></label>' +
@@ -1131,7 +1163,9 @@ document.addEventListener('change', function(e){
   if(yk){
     var v = parseFloat(el.value);
     if(!(v >= 0) || isNaN(v)){ toast('숫자를 넣어 주세요.'); el.value = getCfg(cfgYear)[yk]; return; }
-    editCfg(cfgYear)[yk] = v; save(); toast('저장했어요'); return;
+    editCfg(cfgYear)[yk] = v; save();
+    if(yk === 'minWage' && st.settings.payType === 'monthly' && st.settings.monthlyAuto){ render(); toast('시급을 바꿔서 월급도 ' + won(monthlyPayOf(cfgYear)) + '으로 바뀌었어요'); return; }
+    toast('저장했어요'); return;
   }
   var k = el.getAttribute('data-k');
   if(!k) return;
@@ -1148,25 +1182,27 @@ document.addEventListener('change', function(e){
     S.payType = el.value === 'monthly' ? 'monthly' : 'hourly';
     if(S.payType === 'monthly'){
       if(!S.monthlyFrom) S.monthlyFrom = (+todayIso().slice(0, 4) + 1) + '-01';   // 기본: 내년 1월부터
-      if(!(S.monthlyPay > 0)) S.monthlyPay = defaultMonthlyPay(S.monthlyFrom);
     }
     save(); render(); toast(S.payType === 'monthly' ? S.monthlyFrom.slice(0, 4) + '년 ' + (+S.monthlyFrom.slice(5, 7)) + '월부터 월급제로 계산해요' : '시급제로 계산해요'); return;
   }
   else if(k === 'monthlyFrom'){ if(!/^\d{4}-\d{2}$/.test(el.value)){ toast('시작 월을 골라 주세요.'); el.value = S.monthlyFrom; return; } S.monthlyFrom = el.value; save(); render(); toast('저장했어요'); return; }
   else if(k === 'monthlyPay'){
-    if(el.value.trim() === ''){                       // 다 지우면 그해 시급 × 월 기준시간으로 다시 맞춰요
-      S.monthlyPay = defaultMonthlyPay(S.monthlyFrom); save(); render();
-      toast('시급 × ' + monthHours() + '시간 = ' + won(S.monthlyPay) + '으로 맞췄어요'); return;
+    var fy0 = S.monthlyFrom ? +S.monthlyFrom.slice(0, 4) : +todayIso().slice(0, 4);
+    if(el.value.trim() === ''){                       // 다 지우면 시급 × 월 기준시간 자동 계산으로 돌아가요
+      S.monthlyAuto = true; save(); render();
+      toast('시급 × ' + monthHours() + '시간 = ' + won(monthlyPayOf(fy0)) + '으로 자동 계산해요'); return;
     }
     num = Math.round(parseFloat(el.value));
-    if(!(num > 0)){ toast('월급을 넣어 주세요. 비워 두면 시급 × 기준시간으로 맞춰요.'); el.value = S.monthlyPay; return; }
-    S.monthlyPay = num; save(); render(); toast('저장했어요'); return;
+    if(!(num > 0)){ toast('월급을 넣어 주세요. 비워 두면 시급 × 기준시간으로 맞춰요.'); el.value = monthlyPayOf(fy0); return; }
+    S.monthlyAuto = (num === defaultMonthlyPay(String(fy0)));
+    S.monthlyPay = num; save(); render(); toast(S.monthlyAuto ? '시급 × 기준시간과 같아서 자동 계산으로 둘게요' : '저장했어요'); return;
   }
   else if(k === 'otherPct'){ num = parseFloat(el.value); if(isNaN(num) || num < 0 || num > 30){ toast('0에서 30 사이로 넣어 주세요.'); el.value = S.otherPct; return; } S.otherPct = num; }
   else if(k === 'defMult'){ S.defMult = parseFloat(el.value) || 1; }
   else if(k === 'weeklyPay' || k === 'holidayPay'){ S[k] = !!el.checked; }
   else if(k.indexOf('apply.') === 0){ S.apply[k.slice(6)] = !!el.checked; }
   save(); toast('저장했어요');
+  if(k === 'hours' && S.payType === 'monthly') render();
 });
 document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && sh) closeSheet(); });
 
