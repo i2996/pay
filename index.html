@@ -102,6 +102,8 @@ h1{font-size:1.5rem;font-weight:800;letter-spacing:-0.02em;}
 .pay-next .when{font-size:1.4rem;font-weight:800;letter-spacing:-0.02em;}
 .pay-next .dd{display:inline-block;margin-left:8px;padding:2px 10px;border-radius:999px;background:var(--accent-t);color:var(--accent);font-size:.85rem;font-weight:700;vertical-align:middle;}
 .pay-next .amt{margin-top:8px;font-size:1.1rem;font-weight:700;}
+.annual{margin-bottom:12px;}
+.annual .big{font-size:2rem;font-weight:800;letter-spacing:-0.03em;color:var(--accent);margin:2px 0 10px;}
 .leave-card .num{font-size:2.2rem;font-weight:800;letter-spacing:-0.03em;color:var(--leave);}
 .leave-card .num small{font-size:1rem;font-weight:700;margin-left:2px;}
 .leave-card p.st{font-size:.9rem;color:var(--muted);margin-top:4px;}
@@ -440,6 +442,15 @@ function isMonthly(y, m){
 function monthlyPayOf(y){
   var S = st.settings;
   return S.monthlyAuto ? Math.ceil(getCfg(y).minWage * monthHours() / 10) * 10 : S.monthlyPay;
+}
+/* 연봉: 월급 × 12 (결근·추가근무 없이). 실수령은 매달 같은 공제를 뺀 값 × 12 */
+function annualInfo(y){
+  var pay = monthlyPayOf(y), d = deductions(pay, y);
+  return {y:y, pay:pay, gross:pay * 12, dedM:d.total, netM:pay - d.total, net:(pay - d.total) * 12};
+}
+function annualYear(){
+  var S = st.settings, ty = +todayIso().slice(0, 4), fy = S.monthlyFrom ? +S.monthlyFrom.slice(0, 4) : ty;
+  return Math.max(ty, fy);
 }
 function hourRate(y, m){ return isMonthly(y, m) ? monthlyPayOf(y) / monthHours() : getCfg(y).minWage; }
 function defaultMonthlyPay(ym){
@@ -803,7 +814,19 @@ function renderPay(){
   var list = [];
   eachMonth(S.start, t, function(y, m){ list.push([y, m]); });
   list.reverse();
-  var o = '<div class="months">';
+  var o = '';
+  if(S.payType === 'monthly'){
+    var a = annualInfo(annualYear());
+    o += '<section class="card annual"><h2>' + a.y + '년 연봉<span class="st soon">월급제</span></h2>' +
+      '<p class="big">' + won(a.gross) + '</p>' +
+      '<dl class="lines">' +
+      '<div class="ln"><dt>월급<small>× 12개월</small></dt><dd>' + won(a.pay) + '</dd></div>' +
+      '<div class="ln minus"><dt>월 공제 예상<small>4대보험' + (S.otherPct > 0 ? ' + 기타 ' + S.otherPct + '%' : '') + '</small></dt><dd>' + minus(a.dedM) + '</dd></div>' +
+      '<div class="ln"><dt>월 실수령 예상</dt><dd>' + won(a.netM) + '</dd></div>' +
+      '<div class="ln sum net"><dt>연 실수령 예상</dt><dd>' + won(a.net) + '</dd></div></dl>' +
+      '<p class="muted" style="font-size:.82rem;margin-top:8px">결근·추가근무 없이 1년 일했을 때 기준이에요. 퇴직금은 들어 있지 않고, 소득세는 기타 공제 %로만 반영돼요.</p></section>';
+  }
+  o += '<div class="months">';
   list.forEach(function(ym, idx){
     var y = ym[0], m = ym[1], r = payOf(y, m, t), stt = payStatus(y, m, t), full = payOf(y, m, null);
     var sub = md(payDateFor(y, m)) + ' 지급' + (stt.cls === 'ing' ? ', 월말 예상 ' + won(full.net) : '');
@@ -842,7 +865,8 @@ function renderSettings(){
       '<div class="field"><label for="f_mpay">월급(세전, 원)</label><input type="number" id="f_mpay" data-k="monthlyPay" min="0" step="1000" value="' + mPay + '" inputmode="numeric"><small>' + (S.monthlyAuto
         ? '시급 × ' + monthHours() + '시간으로 자동 계산 중이에요. 연도별 시급이나 근무시간을 바꾸면 같이 바뀌어요.'
         : '직접 넣은 금액이에요. 비우면 시급 × ' + monthHours() + '시간 자동 계산으로 돌아가요.') + '</small></div></div>' +
-      '<p class="pv">월 기준시간 ' + monthHours() + '시간(주휴 포함) · 통상시급 ' + won(rate) + '<br>' +
+      '<p class="pv">연봉(세전) <b>' + won(mPay * 12) + '</b> · 월급 × 12개월<br>' +
+      '월 기준시간 ' + monthHours() + '시간(주휴 포함) · 통상시급 ' + won(rate) + '<br>' +
       '<small class="muted">추가근무는 통상시급으로 계산하고, 결근하면 그날 하루치와 그 주 주휴 하루치를 빼요. 주휴수당·공휴일은 월급에 들어 있어서 따로 더하지 않아요. 중간에 시작한 달은 날짜 수로 나눠 계산해요.</small></p>' +
       (!S.monthlyAuto && rate + 0.5 < mw ? '<p class="banner">통상시급이 ' + mfY + '년 최저시급(' + won(mw) + ')보다 낮아요. 하루 ' + S.hours + '시간 기준 최저 월급은 ' + won(defaultMonthlyPay(String(mfY))) + '이에요.</p>' : '');
   }
