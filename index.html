@@ -167,14 +167,18 @@ details.mrow .body{padding:0 16px 16px;}
 
 /* 설정 */
 .form{display:grid;gap:14px;}
-.field{display:grid;gap:4px;}
+.field{display:grid;gap:4px;align-content:start;min-width:0;}
 .field label,.lbl{font-size:.9rem;font-weight:700;}
 .field small{color:var(--muted);font-size:.8rem;}
-.field input[type=date],.field input[type=number],.field input[type=text],.field select,.field textarea{
-  width:100%;min-height:46px;padding:8px 12px;border:2px solid var(--line);border-radius:10px;background:var(--bg);}
+.field input[type=date],.field input[type=month],.field input[type=number],.field input[type=text],.field select,.field textarea{
+  width:100%;min-width:0;min-height:46px;padding:8px 12px;border:2px solid var(--line);border-radius:10px;background:var(--bg);}
 .field textarea{min-height:110px;font-size:.85rem;}
+.field input[type=date],.field input[type=month]{display:block;height:46px;line-height:normal;}
+.field input::-webkit-date-and-time-value{text-align:left;}
+/* 설정 탭: 입력칸·목록 박스 안은 흰색(다크 모드는 카드색) */
+.setform .field input,.setform .field select,.setform .field textarea,.setform .hrow,.setform .pv,.setform .btn.ghost{background:var(--paper);}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--focus);outline:none;}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start;}
 .chk{display:flex;align-items:flex-start;gap:10px;min-height:44px;}
 .chk input{width:22px;height:22px;margin-top:2px;flex:none;accent-color:var(--accent);}
 .chk span small{display:block;color:var(--muted);font-size:.8rem;}
@@ -820,7 +824,7 @@ function renderSettings(){
   years[+t.slice(0,4)] = 1; years[cfgYear] = 1;
   var ys = Object.keys(years).map(Number).sort();
   var c = getCfg(cfgYear);
-  var o = '<div class="form">';
+  var o = '<div class="form setform">';
   o += '<h2 class="sec-t" style="margin-top:0">근무</h2>' +
     '<div class="two"><div class="field"><label for="f_start">근무 시작일</label><input type="date" id="f_start" data-k="start" value="' + esc(S.start) + '"></div>' +
     '<div class="field"><label for="f_hours">하루 근무시간</label><input type="number" id="f_hours" data-k="hours" min="1" max="12" step="0.5" value="' + S.hours + '" inputmode="decimal"></div></div>' +
